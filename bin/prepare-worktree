@@ -1,0 +1,498 @@
+#!/usr/bin/env python3
+"""Create or heal one ephemeral Takeoff pass worktree without touching checkout state.
+
+Usage: bin/prepare-worktree <canonical-repo> <generated-worktree>
+
+Only the canonical sibling location
+`../<repo>-worktrees/takeoff-pass-<UTC>` is admitted. Evidence-only dirtiness is
+preserved durably before replacement. Any other dirty state fails closed with
+one exact wake.
+"""
+from __future__ import annotations
+
+import fcntl
+import os
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional
+
+
+SAFE_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+SAFE_PASS = re.compile(r"takeoff-pass-[0-9]{8}T[0-9]{6}Z")
+
+
+def refuse(message: str) -> "None":
+    print(f"prepare-worktree: REFUSED — {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        text=True,
+        capture_output=True,
+    )
+    if check and result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
+        refuse(detail)
+    return result
+
+
+def git_dir(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", f"--git-dir={path}", *args],
+        text=True,
+        capture_output=True,
+    )
+    if check and result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
+        refuse(detail)
+    return result
+
+
+def origin_repo_name(canonical: Path) -> str:
+    result = git(canonical, "remote", "get-url", "origin")
+    slug = result.stdout.strip().rstrip("/").rsplit("/", 1)[-1]
+    slug = slug.rsplit(":", 1)[-1]
+    if slug.endswith(".git"):
+        slug = slug[:-4]
+    if not SAFE_REPO.fullmatch(slug):
+        refuse(f"unsafe origin repo name: {slug!r}")
+    return slug
+
+
+def configured_evidence_root() -> Path:
+    configured = os.environ.get("TAKEOFF_EVIDENCE_ROOT")
+    try:
+        root = (
+            Path(configured).expanduser()
+            if configured
+            else Path.home() / "Development" / "takeoff-evidence"
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        refuse(
+            f"cannot resolve TAKEOFF_EVIDENCE_ROOT: {error}; "
+            "set it to an absolute path"
+        )
+    if not root.is_absolute():
+        refuse("TAKEOFF_EVIDENCE_ROOT must be an absolute path")
+    return root
+
+
+def validate_location(canonical: Path, worktree: Path, repo: str) -> None:
+    expected_parent = canonical.parent / f"{repo}-worktrees"
+    if worktree.parent != expected_parent or not SAFE_PASS.fullmatch(worktree.name):
+        refuse(
+            f"{worktree} is not the canonical generated worktree location "
+            f"{expected_parent}/takeoff-pass-<UTC>"
+        )
+
+
+def worktree_common_dir(repo: Path) -> Optional[Path]:
+    result = git(repo, "rev-parse", "--git-common-dir", check=False)
+    if result.returncode != 0:
+        return None
+    path = Path(result.stdout.strip())
+    if not path.is_absolute():
+        path = repo / path
+    return path.resolve()
+
+
+def dirty_paths(worktree: Path) -> List[str]:
+    result = git(
+        worktree,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=traditional",
+    )
+    fields = [field for field in result.stdout.split("\0") if field]
+    paths: List[str] = []
+    index = 0
+    while index < len(fields):
+        field = fields[index]
+        status = field[:2]
+        path = field[3:]
+        paths.append(path)
+        if "R" in status or "C" in status:
+            index += 1
+            if index < len(fields):
+                paths.append(fields[index])
+        index += 1
+    return paths
+
+
+def hidden_index_paths(worktree: Path) -> List[str]:
+    return parse_hidden_index(git(worktree, "ls-files", "-v", "-z").stdout)
+
+
+def parse_hidden_index(output: str) -> List[str]:
+    hidden: List[str] = []
+    for field in output.split("\0"):
+        if not field:
+            continue
+        tag = field[0]
+        if tag != "H":
+            hidden.append(field[2:])
+    return hidden
+
+
+def is_evidence_path(path: str) -> bool:
+    return path == "evidence/takeoff-pass" or path.startswith("evidence/takeoff-pass/")
+
+
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def ensure_durable_directory(path: Path, label: str) -> None:
+    missing: List[Path] = []
+    cursor = path
+    while not os.path.lexists(str(cursor)):
+        missing.append(cursor)
+        cursor = cursor.parent
+    for created in reversed(missing):
+        try:
+            created.mkdir()
+        except FileExistsError:
+            pass
+        try:
+            mode = created.lstat().st_mode
+        except OSError as error:
+            refuse(f"wake: could not prepare {label}: {error}")
+        if not stat.S_ISDIR(mode):
+            refuse(f"wake: {label} must be a real directory: {created}")
+        fsync_directory(created)
+        fsync_directory(created.parent)
+    try:
+        mode = path.lstat().st_mode
+    except OSError as error:
+        refuse(f"wake: could not prepare {label}: {error}")
+    if not stat.S_ISDIR(mode):
+        refuse(f"wake: {label} must be a real directory: {path}")
+
+
+def fsync_tree(root: Path) -> None:
+    if not stat.S_ISDIR(root.lstat().st_mode):
+        refuse(f"wake: inspect non-directory evidence root before cleanup: {root}")
+    directories: List[Path] = []
+    for current, child_directories, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        directories.append(current_path)
+        for name in child_directories:
+            candidate = current_path / name
+            if not stat.S_ISDIR(candidate.lstat().st_mode):
+                refuse(f"wake: inspect non-directory evidence before cleanup: {candidate}")
+        for name in files:
+            candidate = current_path / name
+            if not stat.S_ISREG(candidate.lstat().st_mode):
+                refuse(f"wake: inspect non-regular evidence before cleanup: {candidate}")
+            with candidate.open("rb") as handle:
+                os.fsync(handle.fileno())
+    for directory in reversed(directories):
+        fsync_directory(directory)
+
+
+def validate_evidence_root(worktree: Path) -> Path:
+    evidence_root = worktree / "evidence"
+    source_root = evidence_root / "takeoff-pass"
+    if evidence_root.is_symlink() or source_root.is_symlink():
+        refuse(f"wake: inspect symlinked evidence root before cleanup: {source_root}")
+    return source_root
+
+
+def preserve_receipts(
+    worktree: Path, repo: str, evidence_root: Path
+) -> Optional[Path]:
+    source_root = validate_evidence_root(worktree)
+    source_parent = source_root.parent
+    if not source_root.exists():
+        return None
+    if not source_root.is_dir():
+        refuse(f"wake: inspect non-directory evidence root before cleanup: {source_root}")
+    fsync_tree(source_root)
+
+    repo_root = evidence_root / repo
+    destination_parent = repo_root / "recovered"
+    destination = destination_parent / worktree.name
+    ensure_durable_directory(evidence_root, "durable evidence directory")
+    ensure_durable_directory(repo_root, "durable repo evidence directory")
+    ensure_durable_directory(
+        destination_parent, "durable recovered evidence directory"
+    )
+    if os.path.lexists(str(destination)):
+        refuse(f"wake: reconcile existing recovered evidence at {destination}")
+    try:
+        os.rename(source_root, destination)
+    except OSError as exc:
+        refuse(f"wake: move evidence durably before cleanup: {exc}")
+    fsync_tree(destination)
+    fsync_directory(source_parent)
+    fsync_directory(destination_parent)
+    return destination
+
+
+def restore_receipts(worktree: Path, recovered: Path) -> bool:
+    evidence_root = worktree / "evidence"
+    source_root = evidence_root / "takeoff-pass"
+    try:
+        evidence_mode = evidence_root.lstat().st_mode
+        recovered_mode = recovered.lstat().st_mode
+    except OSError:
+        return False
+    if not stat.S_ISDIR(evidence_mode) or not stat.S_ISDIR(recovered_mode):
+        return False
+    if os.path.lexists(str(source_root)):
+        return False
+    try:
+        os.rename(recovered, source_root)
+    except OSError:
+        return False
+    fsync_directory(source_root.parent)
+    fsync_directory(recovered.parent)
+    return True
+
+
+def worktree_records(canonical: Path) -> Dict[Path, List[str]]:
+    result = git(canonical, "worktree", "list", "--porcelain")
+    records: Dict[Path, List[str]] = {}
+    current: Optional[Path] = None
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            current = Path(line[len("worktree "):]).resolve()
+            records[current] = []
+        elif line and current is not None:
+            records[current].append(line)
+    return records
+
+
+def registered_worktree(canonical: Path, worktree: Path) -> bool:
+    return worktree in worktree_records(canonical)
+
+
+def worktree_locked(canonical: Path, worktree: Path) -> bool:
+    return any(
+        line == "locked" or line.startswith("locked ")
+        for line in worktree_records(canonical).get(worktree, [])
+    )
+
+
+def worktree_admin_dir(common: Path, worktree: Path) -> Optional[Path]:
+    roots = common / "worktrees"
+    if not roots.is_dir():
+        return None
+    for candidate in roots.iterdir():
+        pointer = candidate / "gitdir"
+        if pointer.is_symlink() or not pointer.is_file():
+            continue
+        try:
+            gitfile = Path(pointer.read_text().strip()).expanduser()
+        except OSError:
+            continue
+        if not gitfile.is_absolute():
+            gitfile = candidate / gitfile
+        if gitfile.resolve().parent == worktree:
+            return candidate
+    return None
+
+
+def retiring_worktree(worktree: Path) -> Path:
+    return worktree.with_name(f".{worktree.name}.retiring-{os.getpid()}")
+
+
+def restore_retiring_worktree(
+    canonical: Path, retiring: Path, worktree: Path
+) -> bool:
+    if os.path.lexists(str(worktree)):
+        return False
+    result = git(
+        canonical,
+        "worktree",
+        "move",
+        str(retiring),
+        str(worktree),
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def reflog_only_commits(canonical: Path, admin: Path, target: str) -> List[str]:
+    log = admin / "logs" / "HEAD"
+    if not log.exists():
+        return []
+    if not stat.S_ISREG(log.lstat().st_mode):
+        refuse(f"wake: inspect non-regular worktree reflog at {log}")
+    commits = set()
+    for line in log.read_text(errors="replace").splitlines():
+        fields = line.split(" ", 2)
+        for candidate in fields[:2]:
+            if re.fullmatch(r"[0-9a-f]{40,64}", candidate) and set(candidate) != {"0"}:
+                commits.add(candidate)
+
+    orphaned: List[str] = []
+    for commit in sorted(commits):
+        if git(canonical, "cat-file", "-e", f"{commit}^{{commit}}", check=False).returncode != 0:
+            continue
+        if git(canonical, "merge-base", "--is-ancestor", commit, target, check=False).returncode == 0:
+            continue
+        refs = git(
+            canonical,
+            "for-each-ref",
+            f"--contains={commit}",
+            "--format=%(refname)",
+            check=False,
+        )
+        if refs.returncode != 0:
+            refuse(f"wake: inspect unreadable reflog commit {commit} in {admin}")
+        if not refs.stdout.strip():
+            orphaned.append(commit)
+    return orphaned
+
+
+def validate_missing_worktree(
+    canonical: Path, common: Path, worktree: Path, target: str
+) -> None:
+    if worktree_locked(canonical, worktree):
+        refuse(f"wake: inspect locked worktree metadata for {worktree}")
+    admin = worktree_admin_dir(common, worktree)
+    if admin is None:
+        refuse(f"wake: locate only stale target metadata for {worktree}")
+    old = git_dir(admin, "rev-parse", "HEAD").stdout.strip()
+    if git(canonical, "merge-base", "--is-ancestor", old, target, check=False).returncode != 0:
+        refuse(f"wake: inspect local-only history at {old} in missing {worktree}")
+    reflog_only = reflog_only_commits(canonical, admin, target)
+    if reflog_only:
+        refuse(f"wake: preserve reflog-only history {reflog_only[0]} in missing {worktree}")
+    hidden = parse_hidden_index(git_dir(admin, "ls-files", "-v", "-z").stdout)
+    if hidden:
+        refuse(f"wake: inspect hidden index flags in missing {worktree}: {hidden[0]}")
+    staged = git_dir(admin, "diff", "--cached", "--quiet", "--exit-code", check=False)
+    if staged.returncode == 1:
+        refuse(f"wake: inspect staged index data in missing {worktree}")
+    if staged.returncode != 0:
+        refuse(f"wake: inspect unreadable index metadata in missing {worktree}")
+
+
+def prepare(canonical: Path, worktree: Path) -> None:
+    canonical = canonical.expanduser().resolve()
+    worktree = worktree.expanduser().resolve()
+    top = git(canonical, "rev-parse", "--show-toplevel").stdout.strip()
+    if Path(top).resolve() != canonical:
+        refuse(f"canonical repo must be its top-level checkout: {canonical}")
+
+    repo = origin_repo_name(canonical)
+    evidence_root = configured_evidence_root()
+    validate_location(canonical, worktree, repo)
+    canonical_common = worktree_common_dir(canonical)
+    if canonical_common is None:
+        refuse(f"canonical path is not a git worktree: {canonical}")
+
+    lock_path = canonical_common / "takeoff-worktree.lock"
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        git(canonical, "fetch", "--prune", "origin", "main")
+        target = git(canonical, "rev-parse", "--verify", "origin/main^{commit}").stdout.strip()
+
+        old = "<absent>"
+        if worktree.exists():
+            if worktree_common_dir(worktree) != canonical_common:
+                refuse(f"wake: inspect unowned path before cleanup: {worktree}")
+            old = git(worktree, "rev-parse", "HEAD").stdout.strip()
+            validate_evidence_root(worktree)
+            hidden = hidden_index_paths(worktree)
+            if hidden:
+                refuse(f"wake: inspect hidden index flags in {worktree}: {hidden[0]}")
+            if worktree_locked(canonical, worktree):
+                refuse(f"wake: inspect locked worktree before cleanup: {worktree}")
+            paths = dirty_paths(worktree)
+            unknown = [path for path in paths if not is_evidence_path(path)]
+            if unknown:
+                refuse(f"wake: inspect and preserve non-evidence changes in {worktree}")
+            attached = git(worktree, "symbolic-ref", "-q", "HEAD", check=False).returncode == 0
+            if old == target and not attached and not paths:
+                print(f"READY worktree {target}")
+                return
+            if git(worktree, "merge-base", "--is-ancestor", old, target, check=False).returncode != 0:
+                refuse(f"wake: inspect local-only history at {old} in {worktree}")
+            recovered = preserve_receipts(worktree, repo, evidence_root)
+            if dirty_paths(worktree):
+                refuse(f"wake: pass worktree changed during evidence preservation: {worktree}")
+            retiring = retiring_worktree(worktree)
+            if os.path.lexists(str(retiring)):
+                if recovered is not None and restore_receipts(worktree, recovered):
+                    refuse(f"wake: reconcile stale retirement path before cleanup: {retiring}")
+                refuse(
+                    f"wake: reconcile stale retirement path before cleanup: {retiring}; "
+                    f"recovered evidence remains at {recovered}"
+                )
+            moved = git(
+                canonical,
+                "worktree",
+                "move",
+                str(worktree),
+                str(retiring),
+                check=False,
+            )
+            if moved.returncode != 0:
+                if recovered is not None and restore_receipts(worktree, recovered):
+                    refuse(f"wake: cleanup refused; evidence restored in {worktree}")
+                location = f"; recovered evidence remains at {recovered}" if recovered else ""
+                refuse(f"wake: pass worktree changed during cleanup: {worktree}{location}")
+
+            late_paths = dirty_paths(retiring)
+            if late_paths:
+                restored = restore_retiring_worktree(canonical, retiring, worktree)
+                if restored and recovered is not None:
+                    restore_receipts(worktree, recovered)
+                preserved = worktree if restored else retiring
+                refuse(
+                    f"wake: pass worktree changed during cleanup; "
+                    f"preserved at {preserved}"
+                )
+
+            result = git(canonical, "worktree", "remove", str(retiring), check=False)
+            if result.returncode != 0:
+                restored = restore_retiring_worktree(canonical, retiring, worktree)
+                if restored and recovered is not None and restore_receipts(worktree, recovered):
+                    refuse(f"wake: cleanup refused; evidence restored in {worktree}")
+                location = f"; recovered evidence remains at {recovered}" if recovered else ""
+                preserved = worktree if restored else retiring
+                refuse(
+                    f"wake: pass worktree changed during cleanup: {preserved}{location}"
+                )
+        elif registered_worktree(canonical, worktree):
+            validate_missing_worktree(canonical, canonical_common, worktree, target)
+            result = git(
+                canonical,
+                "worktree",
+                "remove",
+                "--force",
+                str(worktree),
+                check=False,
+            )
+            if result.returncode != 0:
+                refuse(f"wake: remove only stale target metadata for {worktree}")
+
+        if os.path.lexists(str(worktree)):
+            refuse(f"wake: inspect path that survived worktree cleanup: {worktree}")
+        worktree.parent.mkdir(parents=True, exist_ok=True)
+        git(canonical, "worktree", "add", "--detach", str(worktree), target)
+        print(f"HEALED worktree {old} -> {target}")
+
+
+def main() -> None:
+    if len(sys.argv) != 3:
+        refuse("usage: bin/prepare-worktree <canonical-repo> <generated-worktree>")
+    prepare(Path(sys.argv[1]), Path(sys.argv[2]))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Admit one iOS command with a complete, bounded, path-safe environment."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+
+
+DEFAULT_DEVELOPER_DIR = "/Applications/Xcode-26.6.0.app/Contents/Developer"
+DEFAULT_IOS_DESTINATION = "platform=iOS Simulator,name=iPhone 17 Pro"
+DEFAULT_XCB_LOCK_WAIT = "900"
+MAX_XCB_LOCK_WAIT = 7200
+CORE_KEYS = ("DEVELOPER_DIR", "IOS_DESTINATION", "XCB_LOCK_WAIT", "DERIVED_DATA")
+DESTINATION_PATTERN = re.compile(
+    r"platform=iOS Simulator,(?:name|id)=[^,\r\n]+"
+    r"(?:,[A-Za-z][A-Za-z0-9_-]*=[^,\r\n]+)*"
+)
+
+
+class AdmissionError(RuntimeError):
+    """The command cannot be admitted safely."""
+
+
+def _safe_text(value: str) -> bool:
+    return bool(value) and value.isprintable()
+
+
+def _valid_developer_dir(value: str) -> bool:
+    if not _safe_text(value):
+        return False
+    try:
+        developer = Path(value)
+        xcodebuild = developer / "usr" / "bin" / "xcodebuild"
+        return developer.is_absolute() and developer.is_dir() and os.access(xcodebuild, os.X_OK)
+    except (OSError, ValueError):
+        return False
+
+
+def _valid_destination(value: str) -> bool:
+    return _safe_text(value) and DESTINATION_PATTERN.fullmatch(value) is not None
+
+
+def _valid_lock_wait(value: str) -> bool:
+    if not value.isdecimal():
+        return False
+    try:
+        return 1 <= int(value) <= MAX_XCB_LOCK_WAIT
+    except ValueError:
+        return False
+
+
+def _valid_derived_data(value: str) -> bool:
+    if not _safe_text(value):
+        return False
+    try:
+        path = Path(value)
+        if not path.is_absolute() or path == Path(path.anchor) or ".." in path.parts:
+            return False
+        return not path.exists() or path.is_dir()
+    except (OSError, ValueError):
+        return False
+
+
+def _resolved_pass_root(value: str) -> Path:
+    if not _safe_text(value):
+        raise AdmissionError("--pass-root must name an existing absolute directory")
+    try:
+        path = Path(value)
+        if not path.is_absolute() or not path.is_dir():
+            raise AdmissionError("--pass-root must name an existing absolute directory")
+        return path.resolve(strict=True)
+    except (OSError, ValueError) as error:
+        raise AdmissionError("--pass-root must name an existing absolute directory") from error
+
+
+def _default_derived_data(pass_root: Path, env: dict[str, str]) -> str:
+    configured_tmp = env.get("TMPDIR", "")
+    try:
+        tmp_root = Path(configured_tmp) if _safe_text(configured_tmp) else Path(tempfile.gettempdir())
+        if not tmp_root.is_absolute() or not tmp_root.is_dir():
+            tmp_root = Path(tempfile.gettempdir())
+    except (OSError, ValueError):
+        tmp_root = Path(tempfile.gettempdir())
+    pass_id = hashlib.sha256(os.fsencode(pass_root)).hexdigest()[:16]
+    return str(tmp_root / "takeoff-ios-derived-data" / pass_id)
+
+
+def _admit(pass_root: Path, source: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    env = source.copy()
+    repaired: list[str] = []
+
+    if not _valid_developer_dir(env.get("DEVELOPER_DIR", "")):
+        default_developer = env.get("TAKEOFF_IOS_DEFAULT_DEVELOPER_DIR", DEFAULT_DEVELOPER_DIR)
+        if not _valid_developer_dir(default_developer):
+            raise AdmissionError("the configured iOS developer directory is unavailable")
+        env["DEVELOPER_DIR"] = default_developer
+        repaired.append("DEVELOPER_DIR")
+
+    if not _valid_destination(env.get("IOS_DESTINATION", "")):
+        env["IOS_DESTINATION"] = DEFAULT_IOS_DESTINATION
+        repaired.append("IOS_DESTINATION")
+
+    if not _valid_lock_wait(env.get("XCB_LOCK_WAIT", "")):
+        env["XCB_LOCK_WAIT"] = DEFAULT_XCB_LOCK_WAIT
+        repaired.append("XCB_LOCK_WAIT")
+
+    if not _valid_derived_data(env.get("DERIVED_DATA", "")):
+        env["DERIVED_DATA"] = _default_derived_data(pass_root, env)
+        repaired.append("DERIVED_DATA")
+
+    try:
+        Path(env["DERIVED_DATA"]).mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise AdmissionError("the admitted DerivedData directory cannot be created") from error
+
+    return env, repaired
+
+
+def _arguments(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="repair the four required iOS environment keys, then invoke a command"
+    )
+    parser.add_argument("--pass-root", required=True)
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args(argv)
+    if args.command[:1] == ["--"]:
+        args.command = args.command[1:]
+    if not args.command:
+        parser.error("a command is required after --")
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _arguments(sys.argv[1:] if argv is None else argv)
+    try:
+        pass_root = _resolved_pass_root(args.pass_root)
+        env, repaired = _admit(pass_root, os.environ.copy())
+    except AdmissionError as error:
+        print(f"ios-env: {error}", file=sys.stderr)
+        return 2
+
+    repaired_names = ",".join(repaired) if repaired else "none"
+    print(f"HEALED ios-env {repaired_names}", flush=True)
+    try:
+        os.execvpe(args.command[0], args.command, env)
+    except OSError as error:
+        print(f"ios-env: command could not start: {error.strerror or 'unknown error'}", file=sys.stderr)
+        return 126
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

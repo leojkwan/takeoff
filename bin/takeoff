@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Stable entry point for a Takeoff checkout."""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+from typing import NoReturn
+
+
+USAGE = (
+    "usage: takeoff "
+    "{prompt|root|prepare-worktree|ios-env|stamp|install} [...]"
+)
+DOCUMENTS = ("PASS.md", "METHOD.md", "ADOPTION.md")
+HELPERS = {
+    "prepare-worktree": "prepare-worktree",
+    "ios-env": "ios-env",
+    "stamp": "stamp",
+}
+REPAIR_ACTION = (
+    "repair or reclone <takeoff-checkout>, then run "
+    "<takeoff-checkout>/bin/takeoff install"
+)
+
+
+def refuse(message: str) -> NoReturn:
+    print(f"takeoff: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def checkout_root() -> tuple[Path, Path]:
+    try:
+        launcher = Path(__file__).resolve(strict=True)
+    except (OSError, RuntimeError):
+        refuse(
+            "invalid installation: launcher cannot resolve; "
+            f"{REPAIR_ACTION}"
+        )
+
+    root = launcher.parent.parent
+    problems = []
+    if launcher.name != "takeoff" or launcher.parent.name != "bin":
+        problems.append("launcher is not bin/takeoff")
+    for relative in DOCUMENTS:
+        if not (root / relative).is_file():
+            problems.append(f"missing {relative}")
+    for relative in HELPERS.values():
+        helper = root / "bin" / relative
+        if helper.is_symlink():
+            problems.append(f"bin/{relative} is a symlink")
+        elif not helper.is_file():
+            problems.append(f"missing bin/{relative}")
+        elif not os.access(helper, os.X_OK):
+            problems.append(f"bin/{relative} is not executable")
+    if problems:
+        refuse(
+            f"invalid installation at {root}: {', '.join(problems)}; "
+            f"{REPAIR_ACTION}"
+        )
+    return launcher, root
+
+
+def install(launcher: Path, arguments: list[str]) -> int:
+    if not arguments:
+        target_dir = Path.home() / ".local" / "bin"
+    elif len(arguments) == 2 and arguments[0] == "--bin-dir":
+        target_dir = Path(arguments[1]).expanduser()
+    else:
+        refuse("usage: takeoff install [--bin-dir <directory>]")
+
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = target_dir.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        refuse(f"cannot prepare install directory {target_dir}: {error}")
+
+    target = target_dir / "takeoff"
+    if target.is_symlink():
+        try:
+            if target.resolve(strict=True) == launcher:
+                print(f"takeoff: already installed {target} -> {launcher}")
+                return 0
+        except (OSError, RuntimeError):
+            pass
+    if target.exists() or target.is_symlink():
+        refuse(
+            f"refusing to replace {target}; remove it or use "
+            "takeoff install --bin-dir <directory>"
+        )
+
+    try:
+        target.symlink_to(launcher)
+    except FileExistsError:
+        try:
+            if target.is_symlink() and target.resolve(strict=True) == launcher:
+                print(f"takeoff: already installed {target} -> {launcher}")
+                return 0
+        except (OSError, RuntimeError):
+            pass
+        refuse(f"refusing to replace concurrently created {target}")
+    except OSError as error:
+        refuse(f"cannot install {target}: {error}")
+
+    print(f"takeoff: installed {target} -> {launcher}")
+    return 0
+
+
+def main(arguments: list[str] | None = None) -> int:
+    args = sys.argv[1:] if arguments is None else arguments
+    if args[:1] in (["help"], ["--help"], ["-h"]):
+        print(USAGE)
+        return 0
+    if not args:
+        refuse(USAGE)
+
+    launcher, root = checkout_root()
+    command, command_args = args[0], args[1:]
+    if command == "root":
+        if command_args:
+            refuse("usage: takeoff root")
+        print(root)
+        return 0
+    if command == "prompt":
+        if command_args:
+            refuse("usage: takeoff prompt")
+        try:
+            sys.stdout.buffer.write((root / "PASS.md").read_bytes())
+        except OSError as error:
+            refuse(f"cannot read canonical prompt: {error}")
+        return 0
+    if command == "install":
+        return install(launcher, command_args)
+    if command not in HELPERS:
+        refuse(f"unknown command {command!r}; {USAGE}")
+
+    helper = root / "bin" / HELPERS[command]
+    try:
+        os.execv(str(helper), [str(helper), *command_args])
+    except OSError as error:
+        refuse(f"cannot start {command}: {error}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

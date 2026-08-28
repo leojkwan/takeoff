@@ -1,0 +1,536 @@
+#!/usr/bin/env python3
+"""stamp — the supported writer for takeoff ADOPTION.md (METHOD v2 T6).
+
+Usage: takeoff stamp <receipt-path>
+
+Parses a takeoff pass receipt, validates its local shape and source checkout,
+preserves the exact bytes, and records at most one serialized v2 row. This does
+not authenticate the invoker, receipt author, marker provenance, channel
+acceptance, or semantic truth.
+
+Refusal conditions (exit 1; inspect stderr and repository state):
+  - receipt missing/unreadable, or not under a Git worktree's evidence/takeoff-pass/ dir
+  - receipt title is not the first nonblank line, or verdict is unsupported
+  - receipt/evidence path can break the Markdown ledger row
+  - no complete cold-reader reconstruction before why or lane output
+  - no repo derivable, no judged ref, no host line, or repo/ref cannot be resolved
+  - zero executed lanes (T6: zero-lane passes write the memo only)
+  - a non-REFUSED verdict with any nonzero lane return code
+  - a lane row without a quoted marker line
+  - BLESSED without a RELEASED: L4a quote
+  - the target row already stamped (same receipt path appears in ADOPTION.md)
+
+Must stay importable under Python 3.9 (system interpreter).
+"""
+from __future__ import annotations
+
+import fcntl
+import os
+import re
+import stat
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+from adoption_lock import exclusive_adoption_lock
+
+ADOPTION = ROOT / "ADOPTION.md"
+VERDICTS = {"BLESSED", "REFUSED", "DEFERRED", "PROOF-ONLY"}
+SAFE_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+TITLE_LINE = re.compile(r"# takeoff pass — (\S+) — ([A-Z-]+)[ \t]*")
+LANE_LINE = re.compile(r"^[-|]\s*lane\b.*$", re.M)
+LANE_NAME = re.compile(r"^[-|]\s*lane\s+([^\s|]+)(?=[\s|]|$)")
+LANE_MARKER = re.compile(
+    r"""(?:^|[\s|])marker=(?:"([^"]*)"|'([^']*)'|“([^”]*)”)(?=[\s|]|$)"""
+)
+
+
+def refuse(msg: str) -> "None":
+    print(f"stamp: REFUSED — {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def configured_evidence_root() -> Path:
+    configured = os.environ.get("TAKEOFF_EVIDENCE_ROOT")
+    try:
+        root = (
+            Path(configured).expanduser()
+            if configured
+            else Path.home() / "Development" / "takeoff-evidence"
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        refuse(
+            f"cannot resolve TAKEOFF_EVIDENCE_ROOT: {error}; "
+            "set it to an absolute path"
+        )
+    if not root.is_absolute():
+        refuse("TAKEOFF_EVIDENCE_ROOT must be an absolute path")
+    return root
+
+
+def validate_ledger_path(path: Path, label: str) -> None:
+    rendered = os.fspath(path)
+    if "|" in rendered or "\r" in rendered or "\n" in rendered:
+        refuse(f"{label} cannot contain '|' or newline characters")
+
+
+def parse_receipt_title(text: str) -> tuple[str, str, int]:
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if not line.strip():
+            offset += len(line)
+            continue
+        match = TITLE_LINE.fullmatch(line.rstrip("\r\n"))
+        if match is None:
+            refuse(
+                "receipt title must be the first nonblank line and match "
+                "'# takeoff pass — <repo> — <VERDICT>'"
+            )
+        return match.group(1), match.group(2), offset + len(line)
+    refuse(
+        "receipt title must be the first nonblank line and match "
+        "'# takeoff pass — <repo> — <VERDICT>'"
+    )
+
+
+def regular_file_bytes(path: Path, label: str) -> bytes:
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            refuse(f"{label} must be a regular file: {path}")
+        descriptor = os.open(
+            str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino)
+                != (opened.st_dev, opened.st_ino)
+            ):
+                refuse(f"{label} changed while being read: {path}")
+            chunks = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            after_read = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        after = path.lstat()
+        if (
+            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (
+                after_read.st_dev,
+                after_read.st_ino,
+                after_read.st_size,
+                after_read.st_mtime_ns,
+            )
+            or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            != (
+                after_read.st_dev,
+                after_read.st_ino,
+                after_read.st_size,
+                after_read.st_mtime_ns,
+            )
+        ):
+            refuse(f"{label} changed while being read: {path}")
+        return b"".join(chunks)
+    except FileNotFoundError:
+        refuse(f"{label} not found: {path}")
+    except OSError as error:
+        refuse(f"cannot read {label}: {error}")
+
+
+def ensure_durable_directory(path: Path, label: str) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        mode = path.lstat().st_mode
+    except OSError as error:
+        refuse(f"could not prepare {label}: {error}")
+    if not stat.S_ISDIR(mode):
+        refuse(f"{label} must be a real directory: {path}")
+
+
+def validate_cold_reader_lead(text: str, title_end: int) -> None:
+    """Require the project brief to lead the receipt, before operational output."""
+    body = text[title_end:]
+    first_lines = [line for line in body.splitlines() if line.strip()][:4]
+    labels = (
+        "repo purpose",
+        "last BLESSED",
+        "live surfaces",
+        "open contradictions",
+    )
+    values = {}
+    for line, label in zip(first_lines, labels):
+        match = re.fullmatch(rf"- {re.escape(label)}:\s*(\S.*)", line)
+        if not match:
+            refuse(
+                "cold-reader reconstruction must lead with repo purpose, last BLESSED "
+                "ref/date, live surfaces, and open contradictions in that order before "
+                "why or lane output"
+            )
+        values[label] = match.group(1).strip()
+
+    if len(values) != len(labels):
+        refuse(
+            "cold-reader reconstruction must lead with repo purpose, last BLESSED "
+            "ref/date, live surfaces, and open contradictions in that order before "
+            "why or lane output"
+        )
+
+    blessed = values["last BLESSED"]
+    if blessed.lower() != "none found" and not (
+        re.search(r"\b\d{4}-\d{2}-\d{2}\b", blessed)
+        and re.search(r"\b[0-9a-f]{7,40}\b", blessed)
+    ):
+        refuse(
+            "cold-reader reconstruction last BLESSED needs an ISO date and ref, "
+            "or 'none found'"
+        )
+
+
+def parse_lane_rows(text: str) -> list[tuple[str, str, str, str]]:
+    rows = []
+    for line in LANE_LINE.findall(text):
+        name_match = LANE_NAME.match(line)
+        marker_matches = list(LANE_MARKER.finditer(line))
+        if name_match is None or len(marker_matches) != 1:
+            refuse(
+                "malformed lane row: every claimed lane needs exactly one rc, "
+                "quoted marker, and count"
+            )
+
+        marker_match = marker_matches[0]
+        marker = next(
+            value for value in marker_match.groups() if value is not None
+        )
+        unquoted_fields = f"{line[:marker_match.start()]} {line[marker_match.end():]}"
+        rc_tokens = re.findall(r"(?:^|[\s|])rc=([^\s|]+)", unquoted_fields)
+        count_tokens = re.findall(r"(?:^|[\s|])count=([^\s|]+)", unquoted_fields)
+        has_extra_marker = re.search(r"(?:^|[\s|])marker=", unquoted_fields)
+        if (
+            len(rc_tokens) != 1
+            or len(count_tokens) != 1
+            or has_extra_marker is not None
+            or re.fullmatch(r"[0-9]+", rc_tokens[0]) is None
+            or re.fullmatch(r"[0-9]+", count_tokens[0]) is None
+        ):
+            refuse(
+                "malformed lane row: every claimed lane needs exactly one rc, "
+                "quoted marker, and count"
+            )
+        rows.append((name_match.group(1), rc_tokens[0], marker, count_tokens[0]))
+    return rows
+
+
+def durable_copy(
+    source: Path, content: bytes, repo: str, evidence_root: Path
+) -> Path:
+    if not SAFE_REPO.fullmatch(repo):
+        refuse(f"unsafe repo name: {repo!r}")
+
+    destination_dir = evidence_root / repo / "takeoff-pass"
+    destination = destination_dir / source.name
+    try:
+        ensure_durable_directory(evidence_root, "evidence root")
+        ensure_durable_directory(evidence_root / repo, "repo evidence directory")
+        ensure_durable_directory(destination_dir, "durable receipt directory")
+        if os.path.lexists(str(destination)):
+            destination_stat = destination.lstat()
+            if (
+                not stat.S_ISREG(destination_stat.st_mode)
+                or regular_file_bytes(destination, "durable receipt") != content
+            ):
+                refuse(f"durable receipt collision: {destination}")
+            return destination
+
+        temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
+        try:
+            with temporary.open("xb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+            directory_fd = os.open(str(destination_dir), os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    except OSError as exc:
+        refuse(f"could not preserve durable receipt: {exc}")
+    return destination
+
+
+def validate_source(receipt: Path, repo: str, judged_ref: str) -> Path:
+    """Prove the receipt came from the named repo and its judged commit exists."""
+    if receipt.parent.name != "takeoff-pass" or receipt.parent.parent.name != "evidence":
+        refuse("receipt must live under a source repo's evidence/takeoff-pass/ directory")
+    if not SAFE_REPO.fullmatch(repo):
+        refuse(f"unsafe repo name: {repo!r}")
+
+    source_repo = receipt.parent.parent.parent
+    for directory, label in (
+        (receipt.parent, "receipt directory"),
+        (receipt.parent.parent, "evidence directory"),
+        (source_repo, "source repo"),
+    ):
+        try:
+            mode = directory.lstat().st_mode
+        except OSError:
+            refuse(f"{label} path does not exist: {directory}")
+        if not stat.S_ISDIR(mode):
+            refuse(f"{label} must be a real directory: {directory}")
+
+    inside = subprocess.run(
+        ["git", "-C", str(source_repo), "rev-parse", "--is-inside-work-tree"],
+        text=True,
+        capture_output=True,
+    )
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        refuse(f"source path is not a git repository: {source_repo}")
+    top = subprocess.run(
+        ["git", "-C", str(source_repo), "rev-parse", "--show-toplevel"],
+        text=True,
+        capture_output=True,
+    )
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != source_repo.resolve():
+        refuse(f"source repo is not the worktree top level: {source_repo}")
+
+    origin = subprocess.run(
+        ["git", "-C", str(source_repo), "remote", "get-url", "origin"],
+        text=True,
+        capture_output=True,
+    )
+    if origin.returncode != 0:
+        refuse(f"source repo has no origin identity: {source_repo}")
+    origin_slug = origin.stdout.strip().rstrip("/").rsplit("/", 1)[-1]
+    origin_slug = origin_slug.rsplit(":", 1)[-1].removesuffix(".git")
+    if origin_slug != repo:
+        refuse(f"receipt repo {repo!r} does not match source origin {origin_slug!r}")
+
+    resolved = subprocess.run(
+        ["git", "-C", str(source_repo), "rev-parse", "--verify", "--quiet",
+         f"{judged_ref}^{{commit}}"],
+        text=True,
+        capture_output=True,
+    )
+    if resolved.returncode != 0:
+        refuse(f"judged ref does not resolve in source repo: {judged_ref}")
+    head = subprocess.run(
+        ["git", "-C", str(source_repo), "rev-parse", "--verify", "HEAD^{commit}"],
+        text=True,
+        capture_output=True,
+    )
+    if head.returncode != 0:
+        refuse(f"source worktree HEAD does not resolve: {source_repo}")
+    if head.stdout.strip() != resolved.stdout.strip():
+        refuse(
+            f"receipt worktree HEAD does not match judged ref: "
+            f"{head.stdout.strip()} != {resolved.stdout.strip()}"
+        )
+    return source_repo
+
+
+def adoption_status() -> str:
+    result = subprocess.run(
+        ["git", "-C", str(ADOPTION.parent), "status", "--porcelain", "--", ADOPTION.name],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        refuse(f"cannot inspect ADOPTION.md git state: {result.stderr.strip()}")
+    return result.stdout
+
+
+def recoverable_adoption_diff(source: Path, durable: Path) -> bool:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(ADOPTION.parent),
+            "diff",
+            "--no-ext-diff",
+            "--unified=0",
+            "HEAD",
+            "--",
+            ADOPTION.name,
+        ],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        refuse(f"cannot inspect ADOPTION.md diff: {result.stderr.strip()}")
+    added = [line[1:] for line in result.stdout.splitlines()
+             if line.startswith("+") and not line.startswith("+++")]
+    removed = [line for line in result.stdout.splitlines()
+               if line.startswith("-") and not line.startswith("---")]
+    return (
+        not removed
+        and len(added) == 1
+        and (source.as_posix() in added[0] or durable.as_posix() in added[0])
+    )
+
+
+def commit_adoption(
+    repo: str, verdict: str, executed: int, expected_payload: bytes
+) -> None:
+    branch = subprocess.run(
+        ["git", "-C", str(ADOPTION.parent), "symbolic-ref", "--quiet", "--short", "HEAD"],
+        text=True,
+        capture_output=True,
+    )
+    if branch.returncode != 0:
+        refuse("ADOPTION.md checkout is detached; row is durable on disk but not committed")
+    subject = f"adoption: {repo} {verdict} train stamp (executed={executed})"
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(ADOPTION.parent),
+            "commit",
+            "--only",
+            "--no-verify",
+            "-m",
+            subject,
+            "--",
+            ADOPTION.name,
+        ],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        refuse(f"ADOPTION.md row written but commit failed: {result.stderr.strip()}")
+    committed = subprocess.run(
+        ["git", "-C", str(ADOPTION.parent), "show", f"HEAD:{ADOPTION.name}"],
+        capture_output=True,
+        check=False,
+    )
+    if committed.returncode != 0 or committed.stdout != expected_payload:
+        refuse("ADOPTION.md commit payload differs from the stamped row")
+    if adoption_status():
+        refuse("ADOPTION.md changed while the stamped row was committing")
+
+
+def open_adoption() -> "object":
+    try:
+        before = ADOPTION.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            refuse("ADOPTION.md must be a regular file")
+        descriptor = os.open(
+            str(ADOPTION),
+            os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (before.st_dev, before.st_ino)
+            != (opened.st_dev, opened.st_ino)
+        ):
+            os.close(descriptor)
+            refuse("ADOPTION.md changed while opening")
+        return os.fdopen(descriptor, "r+b")
+    except OSError as error:
+        refuse(f"cannot open ADOPTION.md: {error}")
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        refuse("usage: takeoff stamp <receipt-path>")
+    evidence_root = configured_evidence_root()
+    validate_ledger_path(evidence_root, "evidence root")
+    rp = Path(sys.argv[1]).expanduser()
+    validate_ledger_path(rp, "receipt path")
+    receipt_bytes = regular_file_bytes(rp, "receipt")
+    text = receipt_bytes.decode("utf-8", errors="replace")
+
+    repo, verdict, title_end = parse_receipt_title(text)
+    if verdict not in VERDICTS:
+        refuse(f"verdict {verdict!r} not in {sorted(VERDICTS)}")
+    validate_cold_reader_lead(text, title_end)
+
+    ref_m = re.search(r"ref judged[^:]*:\s*([0-9a-f]{7,40})", text) or re.search(
+        r"ref judged\s*/?[^;\n]*?([0-9a-f]{12,40})", text)
+    if not ref_m:
+        refuse("no judged ref (hex sha) found")
+    judged_ref = ref_m.group(1)
+    ref = judged_ref[:12]
+
+    host_m = re.search(r"host\s*[:;]\s*([A-Za-z0-9._-]+)", text)
+    if not host_m:
+        refuse("no host line")
+    host = host_m.group(1)
+
+    validate_source(rp, repo, judged_ref)
+
+    # lanes: require at least one lane row with rc, a quoted marker, and a count
+    lane_rows = parse_lane_rows(text)
+    executed = sum(int(c) for _, _, _, c in lane_rows)
+    if not lane_rows:
+        refuse("no lane rows with rc, quoted marker, and count "
+               "(shape: - lane <name> rc=0 marker=\"<line>\" count=N)")
+    if executed <= 0:
+        refuse("zero executed tests across lanes (T6)")
+    for name, rc, marker, _ in lane_rows:
+        if verdict != "REFUSED" and int(rc) != 0:
+            refuse(f"lane {name}: rc={rc} requires REFUSED verdict")
+        if not marker.strip():
+            refuse(f"lane {name}: empty marker quote")
+
+    if verdict == "BLESSED":
+        rel = re.search(r"^- RELEASED:\s*(.+)$", text, re.M)
+        if not rel or "not released" in rel.group(1).lower():
+            refuse("BLESSED requires a '- RELEASED: <L4a quote>' line")
+
+    elapsed_m = re.search(r"elapsed/budget[^0-9]*([0-9]+s?/[0-9]+s?)", text)
+    elapsed = elapsed_m.group(1) if elapsed_m else "?/?"
+
+    lanes_cell = ",".join(n for n, _, _, _ in lane_rows)
+    stamp_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+    with exclusive_adoption_lock(ADOPTION):
+        with open_adoption() as adoption_file:
+            fcntl.flock(adoption_file.fileno(), fcntl.LOCK_EX)
+            adoption_bytes = adoption_file.read()
+            adoption = adoption_bytes.decode("utf-8")
+            if "## v2 — chief pass history" not in adoption:
+                refuse("ADOPTION.md lacks the v2 section — refuse rather than guess")
+            durable = durable_copy(rp, receipt_bytes, repo, evidence_root)
+            duplicate = rp.as_posix() in adoption or durable.as_posix() in adoption
+            dirty = adoption_status()
+            if duplicate:
+                if dirty and recoverable_adoption_diff(rp, durable):
+                    commit_adoption(repo, verdict, executed, adoption_bytes)
+                    print(f"stamp: HEALED — committed existing {repo} {verdict} row")
+                    return
+                if dirty:
+                    refuse("ADOPTION.md has unrelated uncommitted changes")
+                refuse("this receipt is already stamped")
+            if dirty:
+                refuse("ADOPTION.md has pre-existing uncommitted changes")
+
+            row = (f"| {stamp_ts} | {repo} | {ref} | {verdict} | {host} | {lanes_cell} "
+                   f"| executed={executed} | {elapsed} | {durable} |\n")
+            adoption_file.seek(0, os.SEEK_END)
+            row_bytes = row.encode("utf-8")
+            adoption_file.write(row_bytes)
+            adoption_file.flush()
+            os.fsync(adoption_file.fileno())
+            commit_adoption(
+                repo,
+                verdict,
+                executed,
+                adoption_bytes + row_bytes,
+            )
+    print(f"stamp: OK — {repo} {verdict} executed={executed} -> ADOPTION.md")
+
+
+if __name__ == "__main__":
+    main()
