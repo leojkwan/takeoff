@@ -1,19 +1,28 @@
 # takeoff
 
+**Green is a claim. Takeoff makes it a receipt.**
+
 A release can look green while proving little: an exit code can hide zero
 tests, a marker can be guessed, and a deploy can finish without an external
-readback.
+readback. Takeoff is a clone-anywhere, host-neutral release method in which a
+person or coding host acts as release chief, re-derives the repository's real
+gates, attacks them, follows its own release path, and leaves a bounded
+receipt.
 
-Takeoff is a clone-anywhere, host-neutral release method in which a person or
-coding host acts as release chief, re-derives the repository's real gates,
-attacks them, follows its own release path, and leaves a bounded receipt.
+[Quick start](#quick-start) · [The proof ladder](#proof-ladder) · [Limits](#limits-and-human-judgment)
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/daemon-none-success" alt="No daemon" />
+  <img src="https://img.shields.io/badge/host-neutral-any%20agent-blueviolet" alt="Host neutral" />
+</p>
 
 ## Quick start
 
 Install the command from any clone:
 
 ```bash
-git clone https://github.com/firstbitelabsllc/takeoff.git
+git clone https://github.com/leojkwan/takeoff.git
 cd takeoff
 ./bin/takeoff install
 export PATH="$HOME/.local/bin:$PATH"  # if ~/.local/bin is not already on PATH
