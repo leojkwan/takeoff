@@ -12,8 +12,6 @@ import sys
 import tempfile
 
 
-DEFAULT_DEVELOPER_DIR = "/Applications/Xcode-26.6.0.app/Contents/Developer"
-DEFAULT_IOS_DESTINATION = "platform=iOS Simulator,name=iPhone 17 Pro"
 DEFAULT_XCB_LOCK_WAIT = "900"
 MAX_XCB_LOCK_WAIT = 7200
 CORE_KEYS = ("DEVELOPER_DIR", "IOS_DESTINATION", "XCB_LOCK_WAIT", "DERIVED_DATA")
@@ -96,14 +94,17 @@ def _admit(pass_root: Path, source: dict[str, str]) -> tuple[dict[str, str], lis
     repaired: list[str] = []
 
     if not _valid_developer_dir(env.get("DEVELOPER_DIR", "")):
-        default_developer = env.get("TAKEOFF_IOS_DEFAULT_DEVELOPER_DIR", DEFAULT_DEVELOPER_DIR)
+        default_developer = env.get("TAKEOFF_IOS_DEFAULT_DEVELOPER_DIR", "")
         if not _valid_developer_dir(default_developer):
-            raise AdmissionError("the configured iOS developer directory is unavailable")
+            raise AdmissionError("set DEVELOPER_DIR to an installed Xcode Contents/Developer directory")
         env["DEVELOPER_DIR"] = default_developer
         repaired.append("DEVELOPER_DIR")
 
     if not _valid_destination(env.get("IOS_DESTINATION", "")):
-        env["IOS_DESTINATION"] = DEFAULT_IOS_DESTINATION
+        destination = env.get("TAKEOFF_IOS_DEFAULT_DESTINATION", "")
+        if not _valid_destination(destination):
+            raise AdmissionError("set IOS_DESTINATION to a supported iOS simulator name or id")
+        env["IOS_DESTINATION"] = destination
         repaired.append("IOS_DESTINATION")
 
     if not _valid_lock_wait(env.get("XCB_LOCK_WAIT", "")):

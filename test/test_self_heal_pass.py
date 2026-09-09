@@ -233,6 +233,7 @@ class DirtiedPassFixture:
         for key in CORE_IOS_KEYS:
             env.pop(key, None)
         env["TAKEOFF_IOS_DEFAULT_DEVELOPER_DIR"] = str(self.developer)
+        env["TAKEOFF_IOS_DEFAULT_DESTINATION"] = "platform=iOS Simulator,name=Example Phone"
         probe = (
             "import json,os; "
             f"print(json.dumps({{k: os.environ[k] for k in {CORE_IOS_KEYS!r}}}, sort_keys=True))"

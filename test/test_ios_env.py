@@ -42,6 +42,7 @@ class IosEnvironmentAdmissionTests(unittest.TestCase):
         for key in CORE_KEYS:
             env.pop(key, None)
         env["TAKEOFF_IOS_DEFAULT_DEVELOPER_DIR"] = str(self.default_developer)
+        env["TAKEOFF_IOS_DEFAULT_DESTINATION"] = "platform=iOS Simulator,name=Example Phone"
         env["TMPDIR"] = str(self.tmpdir)
         return env
 
@@ -86,7 +87,7 @@ class IosEnvironmentAdmissionTests(unittest.TestCase):
         self.assertEqual(payload["DEVELOPER_DIR"], str(self.default_developer))
         self.assertEqual(
             payload["IOS_DESTINATION"],
-            "platform=iOS Simulator,name=iPhone 17 Pro",
+            "platform=iOS Simulator,name=Example Phone",
         )
         self.assertEqual(payload["XCB_LOCK_WAIT"], "900")
         derived_data = Path(payload["DERIVED_DATA"])
@@ -109,6 +110,18 @@ class IosEnvironmentAdmissionTests(unittest.TestCase):
         self.assertEqual(healed, "HEALED ios-env none")
         self.assertEqual(payload, overrides)
         self.assertTrue(custom_derived_data.is_dir())
+
+    def test_unconfigured_simulator_is_not_guessed(self) -> None:
+        result = self._run_helper({"TAKEOFF_IOS_DEFAULT_DESTINATION": ""})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("set IOS_DESTINATION", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_unconfigured_xcode_names_the_required_setting(self) -> None:
+        result = self._run_helper({"TAKEOFF_IOS_DEFAULT_DEVELOPER_DIR": ""})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("set DEVELOPER_DIR", result.stderr)
+        self.assertEqual(result.stdout, "")
 
     def test_invalid_values_are_repaired(self) -> None:
         overrides = {
@@ -150,8 +163,8 @@ class IosEnvironmentAdmissionTests(unittest.TestCase):
         profile = PROFILE.read_text(encoding="utf-8")
 
         self.assertTrue(os.access(HELPER, os.X_OK))
-        self.assertIn("/Applications/Xcode-26.6.0.app/Contents/Developer", profile)
-        self.assertIn("platform=iOS Simulator,name=iPhone 17 Pro", profile)
+        self.assertIn("TAKEOFF_IOS_DEFAULT_DEVELOPER_DIR", profile)
+        self.assertIn("TAKEOFF_IOS_DEFAULT_DESTINATION", profile)
         self.assertIn("`XCB_LOCK_WAIT=900`", profile)
         self.assertIn("`takeoff ios-env --pass-root", profile)
         self.assertIn("-- xbq", profile)
