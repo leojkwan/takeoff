@@ -11,32 +11,27 @@ honest record of what it could not prove.
 It is a review prompt with small local helper scripts. You bring the coding
 agent and the repository. No service, subscription, or background process.
 
-![Takeoff's command help in a local terminal](docs/takeoff-help.png)
+![Claude Code reviewing the Takeoff shipping-threshold fixture](docs/takeoff-help.png)
 
-[Watch the terminal walkthrough](docs/takeoff-demo.mp4) · [Reproduce it](docs/capture.md)
+[Watch Claude Code review a fixture](docs/takeoff-demo.mp4) · [Reproduce it](docs/capture.md)
 
 ## Ask your agent to review
 
 Requires Python 3.10 or later, Git, and a coding agent that can run local commands.
 
-```sh
-git clone https://github.com/leojkwan/takeoff.git
-cd takeoff
-./bin/takeoff install
-export PATH="$HOME/.local/bin:$PATH"
-```
-
 Then open a clean checkout of the project you want to review and send your
 agent this:
 
 ```text
-Review this repository for release with Takeoff. Read the project instructions,
-run the relevant checks, challenge any weak test with a reversible local change,
-and leave an honest receipt. Do not push, deploy, publish, or change account
-settings.
+Set up Takeoff and review this repository for release. If Takeoff is not
+available, clone https://github.com/leojkwan/takeoff.git into a temporary
+sibling checkout and use its review instructions. Read this project's
+instructions, run the relevant checks, challenge any weak test with a reversible
+local change, and leave an honest receipt. Do not push, deploy, publish, or
+change account settings.
 ```
 
-For a terminal-driven Codex session, the same request can be supplied directly:
+For a terminal-driven Codex session, the command reference remains available:
 
 ```sh
 cd /path/to/your-project

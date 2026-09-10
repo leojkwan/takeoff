@@ -30,7 +30,7 @@ STALE_CADENCE_CLAIMS = (
 )
 PUBLIC_COMMAND_CONTRACTS = {
     ROOT / "README.md": (
-        "./bin/takeoff install",
+        "Set up Takeoff and review this repository for release.",
         "takeoff root",
         "takeoff prompt",
     ),

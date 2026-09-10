@@ -1,8 +1,38 @@
 {
   "commands": [
-    "./bin/takeoff --help",
-    "./bin/takeoff prompt | head -16"
+    "Native Claude Code reads PASS.md and reviews the public shipping-threshold fixture"
   ],
+  "fixture": "test/fixtures/agent-review-demo",
+  "receipt": "evidence/takeoff-pass/claude-demo-receipt.md",
+  "receiptSha256": "9da8e24173631e9eb5c123a6dba6fc864c65734f4e49c1c0c5d66f41b6d94737",
+  "sourceBefore": {
+    "README.md": {
+      "bytes": 363,
+      "sha256": "f3dec017c908b9d272c301c568d5148706c01a8d07cc49818f742648e40451eb"
+    },
+    "shipping.py": {
+      "bytes": 157,
+      "sha256": "86c0e6c5bdf6282daeeee1e0cb5a404dde25487510eb36141af97d906c90de63"
+    },
+    "test_shipping.py": {
+      "bytes": 226,
+      "sha256": "08a06880fe5c361d68d2997da32548348b8b7e64d4a153151589d1a13126f521"
+    }
+  },
+  "sourceAfter": {
+    "README.md": {
+      "bytes": 363,
+      "sha256": "f3dec017c908b9d272c301c568d5148706c01a8d07cc49818f742648e40451eb"
+    },
+    "shipping.py": {
+      "bytes": 157,
+      "sha256": "86c0e6c5bdf6282daeeee1e0cb5a404dde25487510eb36141af97d906c90de63"
+    },
+    "test_shipping.py": {
+      "bytes": 226,
+      "sha256": "08a06880fe5c361d68d2997da32548348b8b7e64d4a153151589d1a13126f521"
+    }
+  },
   "browser": "151.0.7922.34",
-  "recordedAt": "2026-09-09T23:40:21.432Z"
+  "recordedAt": "2026-09-10T14:29:37.353Z"
 }

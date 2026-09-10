@@ -232,14 +232,14 @@
           controls
           preload="metadata"
           poster="takeoff-help.png"
-          aria-label="Takeoff terminal walkthrough"
+          aria-label="Claude Code reviews the Takeoff shipping-threshold fixture"
         >
           <source src="takeoff-demo.mp4" type="video/mp4" />
-          <a href="takeoff-demo.mp4">Watch the terminal walkthrough</a>
+          <a href="takeoff-demo.mp4">Watch Claude Code review a fixture</a>
         </video>
         <figcaption>
-          Actual local commands: show the helper commands, then print the review
-          prompt. A coding agent performs the review in your project.
+          Native Claude Code reads Takeoff's review instructions, tests a public
+          fixture, and reports its source/test mismatch without repairing it.
         </figcaption>
       </figure>
       <section class="use" id="try-it">
@@ -249,22 +249,16 @@
             Python 3.10+, Git, and an agent that can run local commands. Takeoff
             itself is a prompt and a few scripts.
           </p>
-          <p>
-            Install Takeoff, open a clean checkout of your project, then ask
-            Claude Code or Codex to run a bounded local release review.
-          </p>
+          <p>Open a clean checkout of your project, then ask Claude Code or
+            Codex to set up Takeoff and run a bounded local release review.</p>
         </div>
         <div>
-          <pre>
-git clone https://github.com/leojkwan/takeoff.git
-cd takeoff
-./bin/takeoff install
-export PATH="$HOME/.local/bin:$PATH"</pre
-          >
           <p>Ask your agent:</p>
-          <pre>Review this repository for release with Takeoff. Run the relevant checks,
-challenge weak tests with reversible local changes, and leave an honest receipt.
-Do not push, deploy, publish, or change account settings.</pre>
+          <pre>Set up Takeoff and review this repository for release. If Takeoff is not
+available, clone https://github.com/leojkwan/takeoff.git into a temporary sibling
+checkout and use its review instructions. Run the relevant checks, challenge weak
+tests with reversible local changes, and leave an honest receipt. Do not push,
+deploy, publish, or change account settings.</pre>
           <p>Terminal-driven Codex is also supported:</p>
           <pre>
 cd /path/to/your-project
