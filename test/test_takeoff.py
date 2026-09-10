@@ -264,6 +264,14 @@ class TakeoffLauncherTests(unittest.TestCase):
                 for snippet in forbidden:
                     self.assertNotIn(snippet, content)
 
+    def test_landing_docs_distinguish_local_receipts_from_optional_adoption(self) -> None:
+        for path in (ROOT / "README.md", ROOT / "docs" / "index.html"):
+            with self.subTest(path=path.relative_to(ROOT)):
+                content = path.read_text()
+                self.assertIn("local receipt", content)
+                self.assertIn("ADOPTION", content)
+                self.assertIn("independent verification", content)
+
     def test_detailed_docs_explain_the_invocation_boundary(self) -> None:
         for relative in (
             "AUTOMATION.md",

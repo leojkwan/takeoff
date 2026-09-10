@@ -4,8 +4,9 @@
 
 **Find the weak spots before you ship.**
 
-Give your coding agent a repeatable release review. Run the checks, challenge
-weak tests, and see what remains untested.
+Ask Claude Code or Codex for a release review. Takeoff gives the agent a
+repeatable pass: derive the real checks, challenge weak tests, and leave an
+honest record of what it could not prove.
 
 It is a review prompt with small local helper scripts. You bring the coding
 agent and the repository. No service, subscription, or background process.
@@ -14,7 +15,7 @@ agent and the repository. No service, subscription, or background process.
 
 [Watch the terminal walkthrough](docs/takeoff-demo.mp4) · [Reproduce it](docs/capture.md)
 
-## Try it
+## Ask your agent to review
 
 Requires Python 3.10 or later, Git, and a coding agent that can run local commands.
 
@@ -25,15 +26,25 @@ cd takeoff
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Open a clean checkout of the project you want to review. For example, with Codex:
+Then open a clean checkout of the project you want to review and send your
+agent this:
+
+```text
+Review this repository for release with Takeoff. Read the project instructions,
+run the relevant checks, challenge any weak test with a reversible local change,
+and leave an honest receipt. Do not push, deploy, publish, or change account
+settings.
+```
+
+For a terminal-driven Codex session, the same request can be supplied directly:
 
 ```sh
 cd /path/to/your-project
 codex exec --cd "$PWD" "$(takeoff prompt)"
 ```
 
-Or run `takeoff prompt` and give its output to an agent already working in
-that project. [Other invocation examples](AUTOMATION.md).
+Or run `takeoff prompt` and give its output to Claude Code, Codex, or an agent
+already working in that project. [Other invocation examples](AUTOMATION.md).
 
 ## What happens
 
@@ -45,16 +56,18 @@ It also challenges the checks. For example, if a test still passes after a
 deliberate bug is introduced, the report identifies that gap. Temporary changes
 stay on a local branch and are restored after the experiment.
 
-You get a Markdown report under `evidence/takeoff-pass/` with the commit checked,
-commands run, results, defects found, and anything left untested. Release steps
-follow your repository's rules and require your existing authorization.
+You get a local receipt under `evidence/takeoff-pass/` with the commit checked,
+commands run, results, defects found, and anything left untested.
+Release steps follow your repository's rules and require your existing
+authorization.
 
-Read the report before approving a release. An agent can miss bugs or misread
-output. Takeoff's optional archive helper checks the report format and saves it;
-it does not independently verify every conclusion.
+Read the receipt before approving a release. An agent can miss bugs or misread
+output. `takeoff stamp` is optional: if you choose it, the helper validates the
+receipt format, saves a durable local copy, and commits an `ADOPTION.md` ledger
+row in the Takeoff checkout. That local record is neither release approval nor
+an independent verification of every conclusion.
 
-The report stays with your project. Saving a second copy in Takeoff's ledger is
-[optional](docs/archiving.md).
+The receipt stays with your project unless you choose to [archive it locally](docs/archiving.md).
 
 ## Read or change the review
 
@@ -64,8 +77,8 @@ The report stays with your project. Saving a second copy in Takeoff's ledger is
 
 Your project's current commands take precedence over these examples.
 
-Run `takeoff --help` for helper commands or `takeoff root` to find the installed
-checkout. Installation creates a symlink to this clone; keep it in place or
-reinstall after moving it.
+The command reference is available through `takeoff --help`; `takeoff root`
+shows the installed checkout. Installation creates a symlink to this clone;
+keep it in place or reinstall after moving it.
 
 [MIT license](LICENSE)
