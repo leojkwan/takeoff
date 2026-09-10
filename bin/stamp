@@ -488,7 +488,7 @@ def main() -> None:
     if verdict == "BLESSED":
         rel = re.search(r"^- RELEASED:\s*(.+)$", text, re.M)
         if not rel or "not released" in rel.group(1).lower():
-            refuse("BLESSED requires a '- RELEASED: <L4a quote>' line")
+            refuse("BLESSED requires a '- RELEASED: <observed destination and version>' line")
 
     elapsed_m = re.search(r"elapsed/budget[^0-9]*([0-9]+s?/[0-9]+s?)", text)
     elapsed = elapsed_m.group(1) if elapsed_m else "?/?"

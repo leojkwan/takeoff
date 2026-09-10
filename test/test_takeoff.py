@@ -112,6 +112,17 @@ class TakeoffLauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertEqual(result.stdout, (ROOT / "PASS.md").read_bytes())
 
+    def test_prompt_does_not_require_unused_ledger_or_helpers(self) -> None:
+        checkout, launcher = self.make_relocated_checkout()
+        (checkout / "ADOPTION.md").unlink()
+        for name in ("prepare-worktree", "ios-env", "stamp"):
+            (checkout / "bin" / name).unlink()
+
+        result = self.run_launcher("prompt", launcher=launcher)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, (checkout / "PASS.md").read_text())
+
     def test_relocated_checkout_routes_every_helper(self) -> None:
         checkout, launcher = self.make_relocated_checkout()
 
@@ -209,7 +220,7 @@ class TakeoffLauncherTests(unittest.TestCase):
         helper = checkout / "bin" / "ios-env"
         helper.chmod(0o644)
 
-        result = self.run_launcher("root", launcher=launcher)
+        result = self.run_launcher("ios-env", launcher=launcher)
 
         self.assertEqual(result.returncode, 2)
         self.assertEqual(len(result.stderr.splitlines()), 1)
@@ -253,9 +264,8 @@ class TakeoffLauncherTests(unittest.TestCase):
                 for snippet in forbidden:
                     self.assertNotIn(snippet, content)
 
-    def test_public_docs_share_the_invocation_boundary_contract(self) -> None:
+    def test_detailed_docs_explain_the_invocation_boundary(self) -> None:
         for relative in (
-            "README.md",
             "AUTOMATION.md",
             "PASS.md",
             "DECOMMISSION-2026-08-15.md",
