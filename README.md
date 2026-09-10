@@ -62,6 +62,13 @@ receipt format, saves a durable local copy, and commits an `ADOPTION.md` ledger
 row in the Takeoff checkout. That local record is neither release approval nor
 an independent verification of every conclusion.
 
+`tools/receipt-durability-check.sh` is a source gate: it runs hermetic receipt
+tests and syntax checks. It deliberately does not inspect a machine's historical
+adoption records. Run `PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3
+tools/check-adoption-receipts.py` separately for that strict operational audit;
+it can correctly refuse a checkout without the local receipts named by its
+`ADOPTION.md` history.
+
 The receipt stays with your project unless you choose to [archive it locally](docs/archiving.md).
 
 ## Read or change the review
