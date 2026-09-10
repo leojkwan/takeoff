@@ -2,11 +2,10 @@
 
 # Takeoff
 
-**Make your coding agent try to break the release.**
+**Find the weak spots before you ship.**
 
-Takeoff gives an agent a repeatable way to review a repository: run its checks,
-look for tests that pass without testing anything, and report the failures and
-gaps before you ship.
+Give your coding agent a repeatable release review. Run the checks, challenge
+weak tests, and see what remains untested.
 
 It is a review prompt with small local helper scripts. You bring the coding
 agent and the repository. No service, subscription, or background process.
