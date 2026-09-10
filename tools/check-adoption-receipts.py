@@ -17,12 +17,7 @@ from adoption_lock import exclusive_adoption_lock
 
 ROOT = Path(__file__).resolve().parents[1]
 ADOPTION = ROOT / "ADOPTION.md"
-EVIDENCE_ROOT = Path(
-    os.environ.get(
-        "TAKEOFF_EVIDENCE_ROOT",
-        Path.home() / "Development" / "takeoff-evidence",
-    )
-).expanduser()
+EVIDENCE_ROOT = Path.home() / "Development" / "takeoff-evidence"
 SAFE_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 SAFE_REF = re.compile(r"[0-9a-f]{7,40}")
 
@@ -44,6 +39,24 @@ class TrackedAdoption(NamedTuple):
 
 class PointerWake(Exception):
     """One deterministic operator wake for an ambiguous receipt pointer."""
+
+
+def configured_evidence_root() -> Path:
+    configured = os.environ.get("TAKEOFF_EVIDENCE_ROOT")
+    try:
+        root = (
+            Path(configured).expanduser()
+            if configured
+            else Path.home() / "Development" / "takeoff-evidence"
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise PointerWake(
+            f"cannot resolve TAKEOFF_EVIDENCE_ROOT: {error}; "
+            "set it to an absolute path"
+        )
+    if not root.is_absolute():
+        raise PointerWake("TAKEOFF_EVIDENCE_ROOT must be an absolute path")
+    return root
 
 
 def pointer_wake(repo: str, ref: str, receipt_name: str) -> str:
@@ -626,11 +639,13 @@ def atomic_repair_pointers(adoption: Path) -> List[PointerRepair]:
 
 
 def main() -> int:
+    global EVIDENCE_ROOT
     adoption = Path(sys.argv[1]).expanduser() if len(sys.argv) == 2 else ADOPTION
     if len(sys.argv) > 2:
         print("usage: check-adoption-receipts.py [ADOPTION.md]", file=sys.stderr)
         return 2
     try:
+        EVIDENCE_ROOT = configured_evidence_root()
         repairs = atomic_repair_pointers(adoption)
     except PointerWake as wake:
         print(str(wake), file=sys.stderr)

@@ -84,12 +84,14 @@ class ReceiptPointerRecoveryTests(unittest.TestCase):
             )
         return repository
 
-    def run_checker(self) -> subprocess.CompletedProcess[str]:
+    def run_checker(
+        self, evidence_root: Optional[Path] = None, *, cwd: Optional[Path] = None
+    ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
-        env["TAKEOFF_EVIDENCE_ROOT"] = str(self.evidence)
+        env["TAKEOFF_EVIDENCE_ROOT"] = str(evidence_root or self.evidence)
         return subprocess.run(
             ["/usr/bin/python3", str(CHECKER), str(self.adoption)],
-            cwd=ROOT,
+            cwd=cwd or ROOT,
             env=env,
             text=True,
             capture_output=True,
@@ -344,6 +346,47 @@ class ReceiptPointerRecoveryTests(unittest.TestCase):
             self.adoption.read_text(),
             before.replace(str(self.missing), str(durable), 1),
         )
+
+    def test_relative_evidence_root_refuses_before_tracked_ledger_mutation(self) -> None:
+        before = self.adoption_text()
+        repository = self.make_tracked_adoption(before)
+        cwd = self.root / "candidate-cwd"
+        evidence = cwd / "relative-evidence"
+        candidate = evidence / REPO / "takeoff-pass" / RECEIPT_NAME
+        candidate.parent.mkdir(parents=True)
+        candidate.write_text(receipt())
+        head_before = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+
+        result = self.run_checker(Path("relative-evidence"), cwd=cwd)
+
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        head_after = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stderr.strip(),
+            "TAKEOFF_EVIDENCE_ROOT must be an absolute path",
+        )
+        self.assertEqual(self.adoption.read_bytes(), before.encode("utf-8"))
+        self.assertEqual(head_after, head_before)
+        self.assertEqual(status.stdout, "")
 
     def test_dirty_tracked_adoption_refuses_before_any_rewrite(self) -> None:
         before = self.adoption_text()
