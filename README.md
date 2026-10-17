@@ -29,8 +29,8 @@ agent this:
 
 ```text
 Set up Takeoff and review this repository for release. If Takeoff is not
-available, clone https://github.com/leojkwan/takeoff.git into a temporary
-sibling checkout and use its review instructions. Read this project's
+available, use this project's own release instructions; the public Takeoff
+copy is a frozen historical snapshot. Read this project's
 instructions, run the relevant checks, challenge any weak test with a reversible
 local change, and leave an honest receipt. Do not push, deploy, publish, or
 change account settings.
