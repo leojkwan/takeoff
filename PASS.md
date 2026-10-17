@@ -1,5 +1,11 @@
 # Review this repository before release
 
+> This public copy of Takeoff is a frozen snapshot from 2026-09-10 and is not
+> maintained. Treat these instructions as historical. When the reviewed
+> repository names its own Takeoff installation, use that installation instead.
+> Otherwise, follow that repository's own release instructions, and use this
+> file only where they are silent.
+
 Work in the repository for the current session. Find defects in its checks,
 run the relevant checks, and leave a concise report. A request to review is
 not permission to publish, deploy, spend money, or alter account access.

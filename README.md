@@ -2,6 +2,11 @@
 
 # Takeoff
 
+> [!WARNING]
+> This public copy is a frozen snapshot from 2026-09-10 and is not maintained.
+> Its method, profiles and helper scripts differ from the maintained private
+> version; agents must not treat this checkout as an installed Takeoff.
+
 **Find the weak spots before you ship.**
 
 Ask Claude Code or Codex for a release review. Takeoff gives the agent a
@@ -24,8 +29,8 @@ agent this:
 
 ```text
 Set up Takeoff and review this repository for release. If Takeoff is not
-available, clone https://github.com/leojkwan/takeoff.git into a temporary
-sibling checkout and use its review instructions. Read this project's
+available, use this project's own release instructions; the public Takeoff
+copy is a frozen historical snapshot. Read this project's
 instructions, run the relevant checks, challenge any weak test with a reversible
 local change, and leave an honest receipt. Do not push, deploy, publish, or
 change account settings.
@@ -79,8 +84,9 @@ The receipt stays with your project unless you choose to [archive it locally](do
 
 Your project's current commands take precedence over these examples.
 
-The command reference is available through `takeoff --help`; `takeoff root`
-shows the installed checkout. Installation creates a symlink to this clone;
-keep it in place or reinstall after moving it.
+In this snapshot, the command reference is available through `takeoff --help`;
+`takeoff root` shows the installed checkout. Installing it creates a symlink to
+this clone; keep it in place or reinstall after moving it. For current release
+work, follow your project's own release instructions instead.
 
 [MIT license](LICENSE)
