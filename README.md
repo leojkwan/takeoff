@@ -84,8 +84,9 @@ The receipt stays with your project unless you choose to [archive it locally](do
 
 Your project's current commands take precedence over these examples.
 
-The command reference is available through `takeoff --help`; `takeoff root`
-shows the installed checkout. Installation creates a symlink to this clone;
-keep it in place or reinstall after moving it.
+In this snapshot, the command reference is available through `takeoff --help`;
+`takeoff root` shows the installed checkout. Installing it creates a symlink to
+this clone; keep it in place or reinstall after moving it. For current release
+work, follow your project's own release instructions instead.
 
 [MIT license](LICENSE)
