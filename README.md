@@ -2,6 +2,11 @@
 
 # Takeoff
 
+> [!WARNING]
+> This public copy is a frozen snapshot from 2026-09-10 and is not maintained.
+> Its method, profiles and helper scripts differ from the maintained private
+> version; agents must not treat this checkout as an installed Takeoff.
+
 **Find the weak spots before you ship.**
 
 Ask Claude Code or Codex for a release review. Takeoff gives the agent a
